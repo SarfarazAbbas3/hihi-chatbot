@@ -135,20 +135,62 @@
     ru: "Is baare mein mujhe poori tarah pata nahi, lekin hamari team zaroor madad karegi. WhatsApp khol doon? Aap services, price ya free quote ke baare mein bhi pooch sakte hain.",
     ur: "اس بارے میں مجھے پوری طرح معلوم نہیں، لیکن ہماری ٹیم ضرور مدد کرے گی۔ کیا واٹس ایپ کھول دوں؟ آپ سروسز، قیمت یا فری کوٹ کے بارے میں بھی پوچھ سکتے ہیں۔"
   };
-  var MAIN_CHIPS = ["Our services", "Get a free quote", "Pricing", "Contact us"];
+
+  /* ---------- quick-reply buttons (labels in 3 languages) ---------- */
+  var CHIP = {
+    services:  { en: "Our services",     ru: "Hamari services",  ur: "ہماری سروسز" },
+    quote:     { en: "Get a free quote", ru: "Free quote lein",  ur: "فری کوٹ لیں" },
+    pricing:   { en: "Pricing",          ru: "Price / rate",     ur: "قیمت" },
+    contact:   { en: "Contact us",       ru: "Rabta karein",     ur: "رابطہ کریں" },
+    whatsapp:  { en: "Open WhatsApp",    ru: "WhatsApp kholen",  ur: "واٹس ایپ کھولیں" },
+    portfolio: { en: "Open Portfolio",   ru: "Portfolio dekhein", ur: "پورٹ فولیو دیکھیں" },
+    formats:   { en: "File formats",     ru: "File formats",     ur: "فائل فارمیٹس" },
+    maps:      { en: "Open map",         ru: "Map kholen",       ur: "نقشہ کھولیں" },
+    skip:      { en: "Skip",             ru: "Skip karein",      ur: "چھوڑ دیں" },
+    cancel:    { en: "Cancel",           ru: "Cancel karein",    ur: "منسوخ کریں" }
+  };
+  var LABEL2ID = {};
+  Object.keys(CHIP).forEach(function (id) { ["en", "ru", "ur"].forEach(function (l) { LABEL2ID[CHIP[id][l].toLowerCase()] = id; }); });
+  var MAIN_CHIPS = ["services", "quote", "pricing", "contact"];
+  // follow-up buttons shown after each FAQ answer (keyed by the entry's first keyword)
+  var NEXT = {
+    "service": ["quote", "pricing", "portfolio"], "embroidery": ["quote", "pricing", "formats"],
+    "vector": ["quote", "formats"], "3d": ["quote", "portfolio"], "patch": ["quote", "portfolio"],
+    "portrait": ["quote", "formats"], "time": ["quote", "whatsapp"], "format": ["quote", "whatsapp"],
+    "revision": ["contact"], "refund": ["contact"], "address": ["maps", "whatsapp"], "payment": ["whatsapp"],
+    "how are you": ["quote", "services"], "who are you": ["services", "quote"]
+  };
+  var MAPS_URL = "https://www.google.com/maps/search/?api=1&query=Majeed+Colony+Landhi+Karachi";
 
   var history = [];
   var quote = null;
   var busy = false;
+  var userName = "";
   var els = {};
 
+  function lev(a, b) {
+    var m = a.length, n = b.length, i, j, d = [];
+    for (i = 0; i <= m; i++) { d[i] = [i]; }
+    for (j = 1; j <= n; j++) d[0][j] = j;
+    for (i = 1; i <= m; i++) for (j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[m][n];
+  }
+
+  // keyword matching with typo tolerance ("embrodery", "pricng", "vectr" still work)
   function match(text) {
-    var t = " " + norm(text) + " ", best = null, bestScore = 0;
+    var t = " " + norm(text) + " ", toks = t.trim().split(/\s+/), best = null, bestScore = 0;
     KB.forEach(function (e) {
       var score = 0;
       e.k.forEach(function (w) {
         if (t.indexOf(" " + w + " ") > -1) score += 2 + w.length / 10;
         else if (w.length > 3 && t.indexOf(w) > -1) score += 1;
+        else if (w.length >= 5 && /^[a-z]+$/.test(w)) {
+          var lim = w.length >= 8 ? 2 : 1;
+          for (var i = 0; i < toks.length; i++) {
+            if (Math.abs(toks[i].length - w.length) <= lim && lev(toks[i], w) <= lim) { score += 1.6; break; }
+          }
+        }
       });
       score *= (e.w || 1);
       if (score > bestScore) { best = e; bestScore = score; }
@@ -158,10 +200,28 @@
 
   function scroll() { els.msgs.scrollTop = els.msgs.scrollHeight; }
 
+  /* clickable links / emails / phone numbers inside bot messages (built safely, no innerHTML) */
+  var RX = /(https?:\/\/[^\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z.]{2,}|\+92 ?\d{3} ?\d{7})/g;
+  function rich(el, text) {
+    var last = 0, m; RX.lastIndex = 0;
+    while ((m = RX.exec(text))) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var tok = m[0], tail = "", core = tok.replace(/[.,;:!?)]+$/, function (x) { tail = x; return ""; });
+      var a = document.createElement("a"); a.target = "_blank"; a.rel = "noopener";
+      if (core.charAt(0) === "+") a.href = "https://wa.me/" + core.replace(/\D/g, "");
+      else if (core.indexOf("http") === 0) a.href = core;
+      else a.href = "mailto:" + core;
+      a.textContent = core; el.appendChild(a);
+      if (tail) el.appendChild(document.createTextNode(tail));
+      last = m.index + tok.length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
   function addMsg(text, who, save) {
     var d = document.createElement("div");
     d.className = "hc-m " + (who === "user" ? "hc-user" : "hc-bot");
-    d.textContent = text;
+    if (who === "user") d.textContent = text; else rich(d, text);
     if (/[\u0600-\u06FF]/.test(text)) d.dir = "auto";
     els.msgs.appendChild(d);
     scroll();
@@ -171,10 +231,13 @@
 
   function addChips(list) {
     var old = els.msgs.querySelectorAll(".hc-chips"); old.forEach(function (o) { o.remove(); });
+    if (!list || !list.length) return;
     var w = document.createElement("div"); w.className = "hc-chips";
     list.forEach(function (c) {
-      var b = document.createElement("button"); b.className = "hc-chip"; b.textContent = c;
-      b.onclick = function () { handle(c); };
+      var id = CHIP[c] ? c : LABEL2ID[String(c).toLowerCase()];
+      var label = id ? (CHIP[id][lastLang] || CHIP[id].en) : c;
+      var b = document.createElement("button"); b.className = "hc-chip"; b.textContent = label;
+      b.onclick = function () { handle(label); };
       w.appendChild(b);
     });
     els.msgs.appendChild(w); scroll();
@@ -187,35 +250,46 @@
 
   function reply(text, chips, delay) {
     var t = typing();
-    setTimeout(function () { t.remove(); addMsg(text, "bot"); if (chips) addChips(chips); }, delay || 550);
+    setTimeout(function () { t.remove(); addMsg(text, "bot"); if (chips) addChips(chips); }, delay || Math.min(1300, 400 + text.length * 6));
   }
 
   function persist() { try { sessionStorage.setItem("hc_hist", JSON.stringify(history.slice(-30))); } catch (e) {} }
 
-  /* ---------- quote flow ---------- */
+  function linkBtn(href, label, color) {
+    var a = document.createElement("a"); a.href = href; a.target = "_blank"; a.rel = "noopener"; a.className = "hc-chip";
+    a.style.cssText = "display:inline-block;text-decoration:none;background:" + color + ";border-color:" + color + ";color:#fff";
+    a.textContent = label; return a;
+  }
+
+  /* ---------- quote flow: service -> details -> name -> phone -> summary + send ---------- */
   var SERVICES = ["Embroidery Digitizing", "Raster to Vector", "3D Puff Logo", "Patch Digitizing", "Portrait Digitizing"];
   var Q = {
     start:   { en: "Great, let us get your free quote. Which service do you need?", ru: "Zabardast, chaliye aapka free quote banate hain. Aapko kaun si service chahiye?", ur: "بہت خوب، آپ کا فری کوٹ بناتے ہیں۔ آپ کو کون سی سروس چاہیے؟" },
     details: { en: "Got it. Tell me the design size (e.g. 4 inch wide), garment/cap type and any special notes.", ru: "Theek hai. Design ka size (jaise 4 inch wide), garment/cap type aur koi khaas notes bata dein.", ur: "ٹھیک ہے۔ ڈیزائن کا سائز (مثلاً 4 انچ چوڑا)، کپڑے/ٹوپی کی قسم اور کوئی خاص بات بتا دیں۔" },
     name:    { en: "And your name please?", ru: "Aur aapka naam?", ur: "اور آپ کا نام؟" },
-    done:    { en: "Thanks! Tap the button below to send your request on WhatsApp, then attach your artwork there.", ru: "Shukriya! Neeche button dabayein aur apni request WhatsApp par bhejein, phir wahin artwork attach kar dein.", ur: "شکریہ! نیچے بٹن دبا کر اپنی درخواست واٹس ایپ پر بھیجیں، پھر وہیں آرٹ ورک لگا دیں۔" }
+    phone:   { en: "Optional: your phone/WhatsApp number so the team can reach you faster (or tap Skip).", ru: "Optional: apna phone/WhatsApp number likh dein taake team jaldi rabta kar sake (ya Skip karein).", ur: "اختیاری: اپنا فون/واٹس ایپ نمبر لکھ دیں تاکہ ٹیم جلد رابطہ کر سکے (یا چھوڑ دیں)۔" },
+    done:    { en: "Thanks {n}! Here is your request. Tap a button below to send it to our team, then attach your artwork there.", ru: "Shukriya {n}! Ye aapki request hai. Neeche button dabakar hamari team ko bhejein, phir wahin artwork attach kar dein.", ur: "شکریہ {n}! یہ آپ کی درخواست ہے۔ نیچے بٹن دبا کر ہماری ٹیم کو بھیجیں، پھر وہیں آرٹ ورک لگا دیں۔" },
+    cancel:  { en: "No problem, I cancelled that. What else can I help you with?", ru: "Koi baat nahi, maine cancel kar diya. Aur kya madad kar sakta hoon?", ur: "کوئی بات نہیں، میں نے منسوخ کر دیا۔ اور کیا مدد کر سکتا ہوں؟" }
   };
-  function startQuote() { quote = { step: "service" }; reply(Q.start[lastLang], SERVICES); }
-  function quoteStep(text) {
-    if (quote.step === "service") { quote.service = text; quote.step = "details"; return reply(Q.details[lastLang], ["Skip"]); }
-    if (quote.step === "details") { quote.details = text === "Skip" ? "-" : text; quote.step = "name"; return reply(Q.name[lastLang]); }
-    if (quote.step === "name") {
-      quote.name = text;
-      var msg = "Hi Hihi Digitizing, I am " + quote.name + ". I need a quote for: " + quote.service + ". Details: " + quote.details + ". (Sent from website chatbot)";
-      var url = wa(msg); quote = null;
+  function startQuote() { quote = { step: "service" }; reply(Q.start[lastLang], SERVICES.concat(["cancel"])); }
+  function quoteStep(text, id) {
+    if (quote.step === "service") { quote.service = text; quote.step = "details"; return reply(Q.details[lastLang], ["skip", "cancel"]); }
+    if (quote.step === "details") { quote.details = id === "skip" ? "-" : text; quote.step = "name"; return reply(Q.name[lastLang]); }
+    if (quote.step === "name") { quote.name = text; userName = text; quote.step = "phone"; return reply(Q.phone[lastLang], ["skip"]); }
+    if (quote.step === "phone") {
+      quote.phone = id === "skip" ? "-" : text;
+      var q = quote; quote = null;
+      var summary = "Service: " + q.service + "\nDetails: " + q.details + "\nName: " + q.name + "\nPhone: " + q.phone;
+      var body = "Hi Hihi Digitizing, I need a quote.\n" + summary + "\n(Sent from website chatbot)";
       var t = typing();
       setTimeout(function () {
         t.remove();
-        var d = addMsg(Q.done[lastLang], "bot");
-        var a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; a.className = "hc-chip";
-        a.style.cssText = "display:inline-block;margin-top:8px;background:#25D366;border-color:#25D366;color:#fff;text-decoration:none";
-        a.textContent = "Send on WhatsApp"; d.appendChild(document.createElement("br")); d.appendChild(a); scroll();
-      }, 600);
+        var d = addMsg(Q.done[lastLang].replace("{n}", q.name) + "\n\n" + summary, "bot");
+        var box = document.createElement("div"); box.className = "hc-btns";
+        box.appendChild(linkBtn(wa(body), "Send on WhatsApp", "#25D366"));
+        box.appendChild(linkBtn("mailto:" + CONFIG.email + "?subject=" + encodeURIComponent("Quote request: " + q.service) + "&body=" + encodeURIComponent(body), "Send by email", "#17303B"));
+        d.appendChild(box); scroll();
+      }, 700);
     }
   }
 
@@ -229,7 +303,7 @@
   function askAI(text) {
     var t = typing(); busy = true;
     var ctrl = ("AbortController" in window) ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 20000);
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 25000);
     fetch(CONFIG.aiEndpoint, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: cleanHistory() }),
@@ -242,7 +316,7 @@
         var wantWA = /\[\[WA\]\]/.test(rep);
         rep = rep.replace(/\[\[WA\]\]/g, "").trim();
         addMsg(rep, "bot");
-        if (wantWA) addChips(["Open WhatsApp", "Get a free quote"]);
+        if (wantWA) addChips(["whatsapp", "quote"]);
       })
       .catch(function () { clearTimeout(timer); t.remove(); busy = false; local(text); });
   }
@@ -250,23 +324,33 @@
   function local(text) {
     var L = detect(text);
     var m = match(text);
-    if (m) reply(m.a[L] || m.a.en, m.chips || (m.home ? MAIN_CHIPS : null));
-    else reply(FALLBACK[L], ["Open WhatsApp", "Get a free quote"]);
+    if (m) reply(m.a[L] || m.a.en, m.chips || NEXT[m.k[0]] || (m.home ? MAIN_CHIPS : null));
+    else reply(FALLBACK[L], ["whatsapp", "quote"]);
+  }
+
+  function action(id) {
+    if (id === "services") return local("services");
+    if (id === "quote") return startQuote();
+    if (id === "pricing") return local("price");
+    if (id === "contact") return local("contact");
+    if (id === "formats") return local("format");
+    if (id === "whatsapp") { window.open(wa("Hi Hihi Digitizing, I need some help."), "_blank"); return reply({ en: "Opening WhatsApp for you.", ru: "WhatsApp khol raha hoon.", ur: "واٹس ایپ کھول رہا ہوں۔" }[lastLang], null, 300); }
+    if (id === "maps") { window.open(MAPS_URL, "_blank"); return reply({ en: "Opening our location on the map.", ru: "Map par hamari location khol raha hoon.", ur: "نقشے پر ہماری لوکیشن کھول رہا ہوں۔" }[lastLang], null, 300); }
+    if (id === "portfolio") { reply({ en: "Taking you to the Portfolio page...", ru: "Portfolio page par le ja raha hoon...", ur: "پورٹ فولیو صفحے پر لے جا رہا ہوں..." }[lastLang], null, 300); return setTimeout(function () { location.href = "blog.html"; }, 800); }
+    reply({ en: "What would you like to do?", ru: "Aap kya karna chahte hain?", ur: "آپ کیا کرنا چاہتے ہیں؟" }[lastLang], MAIN_CHIPS);
   }
 
   function handle(text) {
     text = (text || "").trim(); if (!text || busy) return;
+    var low = text.toLowerCase(), id = LABEL2ID[low] || null;
     addMsg(text, "user");
-    var low = text.toLowerCase();
-    var isChip = /^(get a free quote|open whatsapp|open portfolio|our services|contact us|pricing|skip)$/.test(low) || SERVICES.indexOf(text) > -1;
-    if (!isChip) detect(text);
-    if (quote) return quoteStep(text);
-    if (low === "get a free quote" || /\b(free quote|quotation|quote)\b/.test(low)) return startQuote();
-    if (low === "open whatsapp") { window.open(wa("Hi Hihi Digitizing, I need some help."), "_blank"); return reply("Opening WhatsApp for you.", null, 300); }
-    if (low === "open portfolio") { reply("Taking you to the Portfolio page...", null, 300); return setTimeout(function () { location.href = "blog.html"; }, 800); }
-    if (low === "our services") return local("services");
-    if (low === "contact us") return local("contact");
-    if (low === "pricing") return local("price");
+    if (!id && !quote && SERVICES.indexOf(text) < 0) detect(text); // keep the language steady inside the quote flow
+    if (quote) {
+      if (id === "cancel" || /^(cancel|stop|exit|back)$/.test(low)) { quote = null; return reply(Q.cancel[lastLang], MAIN_CHIPS); }
+      return quoteStep(text, id);
+    }
+    if (id) return action(id);
+    if (/\b(free quote|quotation|quote)\b|کوٹیشن|فری کوٹ/.test(low)) return startQuote();
     if (CONFIG.aiEndpoint) return askAI(text);
     local(text);
   }
@@ -280,6 +364,7 @@
     box.innerHTML =
       '<div class="hc-head"><div class="hc-avatar"><i class="fas fa-robot"></i></div>' +
       '<div class="hc-title"><b>' + CONFIG.botName + '</b><small>Online</small></div>' +
+      '<a class="hc-hwa" href="' + wa("Hi Hihi Digitizing, I need some help.") + '" target="_blank" rel="noopener" title="Chat on WhatsApp" aria-label="Chat on WhatsApp"><i class="fab fa-whatsapp"></i></a>' +
       '<button id="hc-reset" title="New chat" aria-label="New chat"><i class="fas fa-redo"></i></button>' +
       '<button id="hc-close" aria-label="Close"><i class="fas fa-times"></i></button></div>' +
       '<div class="hc-msgs" id="hc-msgs" aria-live="polite"></div>' +
@@ -293,7 +378,7 @@
     function close() { box.classList.remove("hc-open"); l.style.display = "flex"; }
     l.onclick = open; teaser.onclick = open;
     box.querySelector("#hc-close").onclick = close;
-    box.querySelector("#hc-reset").onclick = function () { history = []; quote = null; busy = false; lastLang = "en"; persist(); els.msgs.innerHTML = ""; greet(); };
+    box.querySelector("#hc-reset").onclick = function () { history = []; quote = null; busy = false; lastLang = "en"; userName = ""; persist(); els.msgs.innerHTML = ""; greet(); };
     box.querySelector("#hc-form").onsubmit = function (e) { e.preventDefault(); var v = els.input.value; els.input.value = ""; handle(v); };
 
     var saved = []; try { saved = JSON.parse(sessionStorage.getItem("hc_hist") || "[]"); } catch (e) {}
@@ -305,7 +390,7 @@
   }
 
   function greet() {
-    addMsg("Assalam-o-Alaikum! I am the Hihi Digitizing assistant. Ask me about our services, pricing or get a free quote. You can write in English, Urdu or Roman Urdu.", "bot");
+    addMsg("Assalam-o-Alaikum! I am the Hihi Digitizing assistant. Ask me about our services, pricing or get a free quote.", "bot");
     addChips(MAIN_CHIPS);
   }
 
